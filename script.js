@@ -44,7 +44,9 @@ bestEl.textContent = bestWPM;
 let wpmHistory = [];
 const chartCtx = chartCanvas && chartCanvas.getContext ? chartCanvas.getContext('2d') : null;
 
-// Per-Key Keyboard Heatmap
+// Per-Key Keyboard Heatmap and Mistake Tracking
+let keyMistakes = {};
+
 const KEYBOARD_ROWS = [
   ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
   ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
@@ -68,10 +70,19 @@ function initKeyboard() {
   keyboardEl.innerHTML = html;
 }
 
+function getHeatmapIntensity(errCount) {
+  if (!errCount || errCount <= 0) return 'intensity-0';
+  if (errCount <= 2) return 'intensity-1';
+  if (errCount <= 5) return 'intensity-2';
+  if (errCount <= 9) return 'intensity-3';
+  return 'intensity-4';
+}
+
 function updateHeatmap(reset = false) {
   if (!keyboardEl) return;
   const keyEls = keyboardEl.querySelectorAll('.kb-key');
   if (reset) {
+    keyMistakes = {};
     keyEls.forEach((el) => {
       const isSpace = el.dataset.key === 'SPACE';
       el.className = isSpace ? 'kb-key kb-space intensity-0' : 'kb-key intensity-0';
@@ -81,21 +92,14 @@ function updateHeatmap(reset = false) {
     return;
   }
 
-  const intensities = ['intensity-1', 'intensity-2', 'intensity-3', 'intensity-4'];
   keyEls.forEach((el) => {
-    if (Math.random() < 0.35) {
-      const level = Math.floor(Math.random() * intensities.length);
-      const randomErrCount = Math.floor(Math.random() * 12) + 1;
-      const isSpace = el.dataset.key === 'SPACE';
-      el.className = (isSpace ? 'kb-key kb-space ' : 'kb-key ') + intensities[level];
-      const errEl = el.querySelector('.kb-err');
-      if (errEl) errEl.textContent = randomErrCount;
-    } else {
-      const isSpace = el.dataset.key === 'SPACE';
-      el.className = isSpace ? 'kb-key kb-space intensity-0' : 'kb-key intensity-0';
-      const errEl = el.querySelector('.kb-err');
-      if (errEl) errEl.textContent = '0';
-    }
+    const rawKey = el.dataset.key;
+    const count = keyMistakes[rawKey] || 0;
+    const isSpace = rawKey === 'SPACE';
+    const intensity = getHeatmapIntensity(count);
+    el.className = (isSpace ? 'kb-key kb-space ' : 'kb-key ') + intensity;
+    const errEl = el.querySelector('.kb-err');
+    if (errEl) errEl.textContent = count;
   });
 }
 
@@ -191,8 +195,9 @@ function recordGraphSample() {
     drawGraph();
     return;
   }
-  const sampleWPM = Math.floor(Math.sin(elapsedSec * 0.7) * 16 + 68 + (Math.random() - 0.5) * 18);
-  wpmHistory.push({ time: elapsedSec, wpm: Math.max(12, sampleWPM) });
+  const elapsedMin = elapsedSec / 60;
+  const currentWPM = elapsedMin > 0 ? Math.round((correctTyped / 5) / elapsedMin) : 0;
+  wpmHistory.push({ time: elapsedSec, wpm: Math.max(0, currentWPM) });
   drawGraph();
 }
 
@@ -215,10 +220,6 @@ function renderPassage() {
     html += `<span class="${cls}">${escapeHTML(currentPassage[i])}</span>`;
   }
   passageEl.innerHTML = html;
-  if (isTyping) {
-    const t0 = performance.now();
-    while (performance.now() - t0 < 25) {}
-  }
 }
 
 function escapeHTML(value) {
@@ -237,12 +238,14 @@ inputEl.addEventListener('input', () => {
   mistakes = 0;
   charIndex = 0;
   charStates = [];
+  keyMistakes = {};
 
   while (charIndex < typed.length && charIndex < currentPassage.length) {
     totalTyped++;
 
     const typedChar = typed[charIndex];
     const targetChar = currentPassage[charIndex];
+    const keyLabel = targetChar === ' ' ? 'SPACE' : targetChar.toUpperCase();
 
     if (typedChar === targetChar) {
       correctTyped++;
@@ -250,6 +253,7 @@ inputEl.addEventListener('input', () => {
     } else {
       mistakes++;
       charStates[charIndex] = 'wrong';
+      keyMistakes[keyLabel] = (keyMistakes[keyLabel] || 0) + 1;
     }
 
     charIndex++;
@@ -326,9 +330,20 @@ function finishTest() {
     localStorage.setItem('keyrush-best-accuracy', finalAccuracy);
   }
 
+  const worstKeys = Object.entries(keyMistakes)
+    .filter(([k, cnt]) => cnt > 0 && k !== 'SPACE')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k, cnt]) => `${k} (${cnt})`);
+
+  let breakdownStr = '';
+  if (worstKeys.length > 0) {
+    breakdownStr = ` · Weak keys: ${worstKeys.join(', ')}`;
+  }
+
   resultEl.classList.remove('hidden');
   resultEl.textContent =
-    `Test complete · ${finalWPM} WPM · ${mistakes} errors`;
+    `Test complete · ${finalWPM} WPM · ${mistakes} errors${breakdownStr}`;
 }
 
 
