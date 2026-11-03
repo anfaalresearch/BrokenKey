@@ -55,15 +55,21 @@ function resolvePhysicalKey(code, key = '') {
     if (code === 'Space') return 'SPACE';
     if (code.startsWith('Key') && code.length === 4) return code.slice(3).toUpperCase();
     if (code.startsWith('Digit') && code.length === 6) return code.slice(5);
+    if (code === 'BracketLeft') return '[';
+    if (code === 'BracketRight') return ']';
+    if (code === 'Quote') return "'";
+    if (code === 'Backquote') return '`';
+    if (code === 'Backslash') return '\\';
+    if (code === 'Slash') return '/';
+    if (code === 'Semicolon') return ';';
     if (code === 'Comma') return ',';
     if (code === 'Period') return '.';
-    if (code === 'Semicolon') return ';';
-    if (code === 'Slash') return '/';
     if (code === 'Minus') return '-';
     if (code === 'Equal') return '=';
+    if (code === 'Enter') return 'ENTER';
   }
   // Fallback for virtual / mobile keyboards without physical code
-  if (key === ' ') return 'SPACE';
+  if (key === ' ' || key === '\n') return 'SPACE';
   if (typeof key === 'string' && key.length === 1) return key.toUpperCase();
   return null;
 }
@@ -273,13 +279,18 @@ function escapeHTML(value) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
+let isPasting = false;
+inputEl.addEventListener('paste', () => {
+  isPasting = true;
+});
+
 inputEl.addEventListener('keydown', (event) => {
+  // Allow default Backspace behavior so users can correct typos (coordinates with PR #36)
   if (event.key === 'Backspace') {
-    event.preventDefault();
     return;
   }
 
-  // Ignore modifier combinations (shortcuts)
+  // Ignore modifier combinations (shortcuts like Ctrl+C, Cmd+V)
   if (event.ctrlKey || event.metaKey || event.altKey) return;
   // Ignore non-printable keys (Shift, CapsLock, Tab, Arrow keys)
   if (event.key.length > 1 && event.key !== 'Enter') return;
@@ -304,14 +315,16 @@ inputEl.addEventListener('keydown', (event) => {
   }
 });
 
-inputEl.addEventListener('input', () => {
+inputEl.addEventListener('input', (event) => {
   const typed = inputEl.value;
+  const wasPasted = isPasting || (event && event.inputType === 'insertFromPaste');
+  isPasting = false;
 
   totalTyped = 0;
   correctTyped = 0;
   mistakes = 0;
   charIndex = 0;
-  charStates = [];
+  charStates = new Array(currentPassage.length).fill('');
 
   while (charIndex < typed.length && charIndex < currentPassage.length) {
     totalTyped++;
@@ -326,8 +339,9 @@ inputEl.addEventListener('input', () => {
       mistakes++;
       charStates[charIndex] = 'wrong';
 
-      // Fallback for virtual keyboards or pasted input not captured by keydown
-      if (charIndex > lastTrackedKeydownPos && charIndex >= lastProcessedLength) {
+      // Fallback for virtual keyboards without keydown events
+      // Pasted input is validated against the passage, but MUST NOT be recorded as physical keystrokes or substitutions
+      if (!wasPasted && charIndex > lastTrackedKeydownPos && charIndex >= lastProcessedLength) {
         const targetKey = resolveExpectedKey(targetChar);
         const fallbackPressed = resolvePhysicalKey(null, typedChar);
         keyMistakes[targetKey] = (keyMistakes[targetKey] || 0) + 1;
