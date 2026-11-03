@@ -46,6 +46,50 @@ const chartCtx = chartCanvas && chartCanvas.getContext ? chartCanvas.getContext(
 
 // Per-Key Keyboard Heatmap and Mistake Tracking
 let keyMistakes = {};
+let keySubstitutions = {};
+let lastTrackedKeydownPos = -1;
+let lastProcessedLength = 0;
+
+function resolvePhysicalKey(code, key = '') {
+  if (code) {
+    if (code === 'Space') return 'SPACE';
+    if (code.startsWith('Key') && code.length === 4) return code.slice(3).toUpperCase();
+    if (code.startsWith('Digit') && code.length === 6) return code.slice(5);
+    if (code === 'Comma') return ',';
+    if (code === 'Period') return '.';
+    if (code === 'Semicolon') return ';';
+    if (code === 'Slash') return '/';
+    if (code === 'Minus') return '-';
+    if (code === 'Equal') return '=';
+  }
+  // Fallback for virtual / mobile keyboards without physical code
+  if (key === ' ') return 'SPACE';
+  if (typeof key === 'string' && key.length === 1) return key.toUpperCase();
+  return null;
+}
+
+function resolveExpectedKey(char) {
+  if (!char) return null;
+  if (char === ' ' || char === '\n') return 'SPACE';
+  return char.toUpperCase();
+}
+
+function recordSubstitution(expectedKey, pressedKey) {
+  if (!expectedKey || !pressedKey || expectedKey === pressedKey) return;
+  if (!keySubstitutions[expectedKey]) {
+    keySubstitutions[expectedKey] = {};
+  }
+  keySubstitutions[expectedKey][pressedKey] = (keySubstitutions[expectedKey][pressedKey] || 0) + 1;
+}
+
+function getTopSubstitution(expectedKey) {
+  const map = keySubstitutions[expectedKey];
+  if (!map) return null;
+  const entries = Object.entries(map);
+  if (entries.length === 0) return null;
+  entries.sort((a, b) => b[1] - a[1]);
+  return { pressedKey: entries[0][0], count: entries[0][1] };
+}
 
 const KEYBOARD_ROWS = [
   ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
@@ -83,6 +127,9 @@ function updateHeatmap(reset = false) {
   const keyEls = keyboardEl.querySelectorAll('.kb-key');
   if (reset) {
     keyMistakes = {};
+    keySubstitutions = {};
+    lastTrackedKeydownPos = -1;
+    lastProcessedLength = 0;
     keyEls.forEach((el) => {
       const isSpace = el.dataset.key === 'SPACE';
       el.className = isSpace ? 'kb-key kb-space intensity-0' : 'kb-key intensity-0';
@@ -227,7 +274,34 @@ function escapeHTML(value) {
 }
 
 inputEl.addEventListener('keydown', (event) => {
-  if (event.key === 'Backspace') event.preventDefault();
+  if (event.key === 'Backspace') {
+    event.preventDefault();
+    return;
+  }
+
+  // Ignore modifier combinations (shortcuts)
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  // Ignore non-printable keys (Shift, CapsLock, Tab, Arrow keys)
+  if (event.key.length > 1 && event.key !== 'Enter') return;
+
+  if (!isTyping || !currentPassage) return;
+  const currentPos = inputEl.value.length;
+  if (currentPos >= currentPassage.length) return;
+
+  const expectedChar = currentPassage[currentPos];
+  const expectedKey = resolveExpectedKey(expectedChar);
+  const pressedKey = resolvePhysicalKey(event.code, event.key);
+  const typedChar = event.key === 'Enter' ? '\n' : event.key;
+
+  if (typedChar !== expectedChar) {
+    // Cumulative error count for this expected target key
+    keyMistakes[expectedKey] = (keyMistakes[expectedKey] || 0) + 1;
+    if (pressedKey) {
+      recordSubstitution(expectedKey, pressedKey);
+    }
+    lastTrackedKeydownPos = currentPos;
+    updateHeatmap();
+  }
 });
 
 inputEl.addEventListener('input', () => {
@@ -238,14 +312,12 @@ inputEl.addEventListener('input', () => {
   mistakes = 0;
   charIndex = 0;
   charStates = [];
-  keyMistakes = {};
 
   while (charIndex < typed.length && charIndex < currentPassage.length) {
     totalTyped++;
 
     const typedChar = typed[charIndex];
     const targetChar = currentPassage[charIndex];
-    const keyLabel = targetChar === ' ' ? 'SPACE' : targetChar.toUpperCase();
 
     if (typedChar === targetChar) {
       correctTyped++;
@@ -253,12 +325,22 @@ inputEl.addEventListener('input', () => {
     } else {
       mistakes++;
       charStates[charIndex] = 'wrong';
-      keyMistakes[keyLabel] = (keyMistakes[keyLabel] || 0) + 1;
+
+      // Fallback for virtual keyboards or pasted input not captured by keydown
+      if (charIndex > lastTrackedKeydownPos && charIndex >= lastProcessedLength) {
+        const targetKey = resolveExpectedKey(targetChar);
+        const fallbackPressed = resolvePhysicalKey(null, typedChar);
+        keyMistakes[targetKey] = (keyMistakes[targetKey] || 0) + 1;
+        if (fallbackPressed) {
+          recordSubstitution(targetKey, fallbackPressed);
+        }
+      }
     }
 
     charIndex++;
   }
 
+  lastProcessedLength = typed.length;
   updateHeatmap();
   renderPassage();
   updateStats();
@@ -333,12 +415,15 @@ function finishTest() {
   const worstKeys = Object.entries(keyMistakes)
     .filter(([k, cnt]) => cnt > 0 && k !== 'SPACE')
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([k, cnt]) => `${k} (${cnt})`);
+    .slice(0, 3);
 
   let breakdownStr = '';
   if (worstKeys.length > 0) {
-    breakdownStr = ` · Weak keys: ${worstKeys.join(', ')}`;
+    const details = worstKeys.map(([k, cnt]) => {
+      const topSub = getTopSubstitution(k);
+      return topSub ? `${k} (${cnt}x, confused with ${topSub.pressedKey})` : `${k} (${cnt}x)`;
+    });
+    breakdownStr = ` · Weak keys: ${details.join(', ')}`;
   }
 
   resultEl.classList.remove('hidden');

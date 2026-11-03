@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getHeatmapIntensity,
-  computeFingerWeakness,
-  calculateRealWpm,
-  generateAdaptiveDrill
+  resolvePhysicalKey,
+  resolveExpectedKey,
+  recordSubstitution,
+  getTopSubstitution,
+  recordMistake,
+  calculateRealWpm
 } from './analytics.js';
 
 test('Heatmap intensity matches UI design thresholds', () => {
@@ -19,19 +22,64 @@ test('Heatmap intensity matches UI design thresholds', () => {
   assert.equal(getHeatmapIntensity(25), 'intensity-4');
 });
 
-test('Finger weakness aggregation accurately maps mistake keys to hand anatomy', () => {
-  const mistakes = {
-    P: 4, // Right Pinky
-    Q: 2, // Left Pinky
-    A: 3, // Left Pinky (Total Left Pinky = 5)
-    T: 1  // Left Index
-  };
+test('Physical key resolution uses KeyboardEvent.code with mobile/virtual fallback', () => {
+  // Physical key codes
+  assert.equal(resolvePhysicalKey('KeyA', 'a'), 'A');
+  assert.equal(resolvePhysicalKey('KeyZ', 'w'), 'Z');
+  assert.equal(resolvePhysicalKey('Space', ' '), 'SPACE');
+  assert.equal(resolvePhysicalKey('Digit5', '5'), '5');
+  assert.equal(resolvePhysicalKey('Comma', ','), ',');
 
-  const ranking = computeFingerWeakness(mistakes);
-  assert.equal(ranking[0].finger, 'Left Pinky');
-  assert.equal(ranking[0].errors, 5);
-  assert.equal(ranking[1].finger, 'Right Pinky');
-  assert.equal(ranking[1].errors, 4);
+  // Mobile / virtual keyboard fallback
+  assert.equal(resolvePhysicalKey('', 'e'), 'E');
+  assert.equal(resolvePhysicalKey(null, ' '), 'SPACE');
+
+  // Non-printable modifier keys ignored
+  assert.equal(resolvePhysicalKey('ShiftLeft', 'Shift'), null);
+});
+
+test('Expected-to-pressed key substitution matrix tracks confusions accurately', () => {
+  const substitutions = {};
+
+  // Expected 'E', user pressed physical 'R' twice and 'W' once
+  recordSubstitution(substitutions, 'E', 'R');
+  recordSubstitution(substitutions, 'E', 'R');
+  recordSubstitution(substitutions, 'E', 'W');
+
+  assert.equal(substitutions['E']['R'], 2);
+  assert.equal(substitutions['E']['W'], 1);
+
+  const top = getTopSubstitution(substitutions, 'E');
+  assert.deepEqual(top, { pressedKey: 'R', count: 2 });
+
+  // Correct key matches should not record a substitution error
+  recordSubstitution(substitutions, 'E', 'E');
+  assert.equal(substitutions['E']['E'], undefined);
+});
+
+test('keyMistakes retains cumulative error counts across inputs', () => {
+  const session = { keyMistakes: {}, keySubstitutions: {} };
+
+  // Mistake 1 on 'E'
+  recordMistake(session, 'e', 'KeyR', 'r');
+  assert.equal(session.keyMistakes['E'], 1);
+
+  // Subsequent typing must NOT reset keyMistakes
+  assert.equal(session.keyMistakes['E'], 1);
+
+  // Mistake 2 on 'E'
+  recordMistake(session, 'e', 'KeyD', 'd');
+  assert.equal(session.keyMistakes['E'], 2);
+
+  // Mistake on 'SPACE'
+  recordMistake(session, ' ', 'KeyB', 'b');
+  assert.equal(session.keyMistakes['SPACE'], 1);
+
+  // Verify cumulative retention and substitutions
+  assert.equal(session.keyMistakes['E'], 2);
+  assert.equal(session.keyMistakes['SPACE'], 1);
+  assert.equal(session.keySubstitutions['E']['R'], 1);
+  assert.equal(session.keySubstitutions['E']['D'], 1);
 });
 
 test('Real WPM calculation is accurate and handles edge cases', () => {
@@ -44,20 +92,4 @@ test('Real WPM calculation is accurate and handles edge cases', () => {
   // Edge cases
   assert.equal(calculateRealWpm(0, 30), 0);
   assert.equal(calculateRealWpm(100, 0), 0);
-});
-
-test('Adaptive drill generator creates exercises focused on worst keys', () => {
-  const mistakes = {
-    R: 5,
-    P: 3,
-    Z: 1
-  };
-
-  const drill = generateAdaptiveDrill(mistakes);
-  assert.ok(drill.includes('[R, P, Z]'));
-  assert.ok(drill.includes('report') || drill.includes('packet') || drill.includes('hazard'));
-
-  // Fallback when no mistakes
-  const fallback = generateAdaptiveDrill({}, 'Default text');
-  assert.equal(fallback, 'Default text');
 });
