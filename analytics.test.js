@@ -76,7 +76,11 @@ function loadScriptInstance() {
     querySelectorAll: () => [new MockElement()],
     body: new MockElement('body')
   };
-  const win = { location: { href: '' } };
+  const win = {
+    location: { href: '' },
+    addEventListener: () => {},
+    removeEventListener: () => {}
+  };
   const storage = { getItem: () => null, setItem: () => {} };
 
   const scriptCode = fs.readFileSync(new URL('./script.js', import.meta.url), 'utf8');
