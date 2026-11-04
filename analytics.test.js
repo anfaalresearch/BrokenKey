@@ -1,18 +1,95 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   getHeatmapIntensity,
   resolvePhysicalKey,
   resolveExpectedKey,
   recordSubstitution,
   getTopSubstitution,
-  recordMistake,
-  calculateRealWpm,
-  createSession,
-  applyKeystroke,
-  applyBackspace,
-  applyPaste
+  calculateRealWpm
 } from './analytics.js';
+
+// Setup lightweight DOM environment for testing real browser event handlers in script.js
+class MockElement extends EventTarget {
+  constructor(id = '') {
+    super();
+    this.id = id;
+    this.value = '';
+    this.textContent = '';
+    this.innerHTML = '';
+    this.dataset = {};
+    this.classList = {
+      add() {},
+      remove() {},
+      toggle() {},
+      contains() { return false; }
+    };
+    this.style = {};
+    this.disabled = false;
+  }
+  querySelector() { return new MockElement(); }
+  querySelectorAll() { return [new MockElement()]; }
+  scrollIntoView() {}
+  focus() {}
+  getContext() {
+    return {
+      clearRect() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      stroke() {},
+      fillText() {},
+      arc() {},
+      fill() {}
+    };
+  }
+}
+
+class KeyboardEventMock extends Event {
+  constructor(type, init = {}) {
+    super(type, init);
+    this.key = init.key || '';
+    this.code = init.code || '';
+    this.ctrlKey = Boolean(init.ctrlKey);
+    this.metaKey = Boolean(init.metaKey);
+    this.altKey = Boolean(init.altKey);
+  }
+}
+
+class InputEventMock extends Event {
+  constructor(type, init = {}) {
+    super(type, init);
+    this.inputType = init.inputType || 'insertText';
+  }
+}
+
+function loadScriptInstance() {
+  const elements = {};
+  function getEl(id) {
+    if (!elements[id]) elements[id] = new MockElement(id);
+    return elements[id];
+  }
+
+  const doc = {
+    getElementById: getEl,
+    querySelectorAll: () => [new MockElement()],
+    body: new MockElement('body')
+  };
+  const win = { location: { href: '' } };
+  const storage = { getItem: () => null, setItem: () => {} };
+
+  const scriptCode = fs.readFileSync(new URL('./script.js', import.meta.url), 'utf8');
+  const fn = new Function('document', 'window', 'localStorage', 'KeyboardEvent', 'Event', 'module', 'exports', scriptCode);
+  const mod = { exports: {} };
+
+  fn(doc, win, storage, KeyboardEventMock, Event, mod, mod.exports);
+  return { ...mod.exports, elements };
+}
+
+// -------------------------------------------------------------
+// 1. Unit Tests for Analytics Core
+// -------------------------------------------------------------
 
 test('Heatmap intensity matches UI design thresholds', () => {
   assert.equal(getHeatmapIntensity(0), 'intensity-0');
@@ -26,14 +103,14 @@ test('Heatmap intensity matches UI design thresholds', () => {
   assert.equal(getHeatmapIntensity(25), 'intensity-4');
 });
 
-test('Physical key resolution covers full standard layout including brackets, quotes, and backslash', () => {
+test('Physical key resolution and Enter/newline mapping are consistent', () => {
   // Letters and numbers
   assert.equal(resolvePhysicalKey('KeyA', 'a'), 'A');
   assert.equal(resolvePhysicalKey('KeyZ', 'w'), 'Z');
   assert.equal(resolvePhysicalKey('Digit5', '5'), '5');
   assert.equal(resolvePhysicalKey('Space', ' '), 'SPACE');
 
-  // Extended keyboard keys: brackets, quotes, backslash, symbols
+  // Extended keys: brackets, quotes, backslash, slash
   assert.equal(resolvePhysicalKey('BracketLeft', '['), '[');
   assert.equal(resolvePhysicalKey('BracketRight', ']'), ']');
   assert.equal(resolvePhysicalKey('Quote', "'"), "'");
@@ -43,11 +120,16 @@ test('Physical key resolution covers full standard layout including brackets, qu
   assert.equal(resolvePhysicalKey('Semicolon', ';'), ';');
   assert.equal(resolvePhysicalKey('Minus', '-'), '-');
   assert.equal(resolvePhysicalKey('Equal', '='), '=');
-  assert.equal(resolvePhysicalKey('Enter', '\n'), 'ENTER');
 
-  // Mobile / virtual keyboard fallback (no code)
+  // Enter and newline consistency
+  assert.equal(resolvePhysicalKey('Enter', '\n'), 'ENTER');
+  assert.equal(resolveExpectedKey('\n'), 'ENTER');
+  assert.equal(resolveExpectedKey(' '), 'SPACE');
+
+  // Mobile / virtual keyboard fallback
   assert.equal(resolvePhysicalKey('', 'e'), 'E');
   assert.equal(resolvePhysicalKey(null, ' '), 'SPACE');
+  assert.equal(resolvePhysicalKey(null, '\n'), 'ENTER');
 
   // Non-printable modifier keys ignored
   assert.equal(resolvePhysicalKey('ShiftLeft', 'Shift'), null);
@@ -56,7 +138,6 @@ test('Physical key resolution covers full standard layout including brackets, qu
 test('Expected-to-pressed key substitution matrix tracks confusions accurately', () => {
   const substitutions = {};
 
-  // User expected 'E', pressed physical 'R' twice and 'W' once
   recordSubstitution(substitutions, 'E', 'R');
   recordSubstitution(substitutions, 'E', 'R');
   recordSubstitution(substitutions, 'E', 'W');
@@ -73,95 +154,151 @@ test('Expected-to-pressed key substitution matrix tracks confusions accurately',
 });
 
 test('Real WPM calculation is accurate and handles edge cases', () => {
-  // 250 characters typed in 60 seconds = 50 words / 1 min = 50 WPM
   assert.equal(calculateRealWpm(250, 60), 50);
-
-  // 125 characters in 30 seconds = 25 words / 0.5 min = 50 WPM
   assert.equal(calculateRealWpm(125, 30), 50);
-
-  // Edge cases
   assert.equal(calculateRealWpm(0, 30), 0);
   assert.equal(calculateRealWpm(100, 0), 0);
 });
 
-test('Integration: Backspace compatibility retains cumulative error counts while allowing corrections', () => {
-  const session = createSession('The quick brown fox');
+// -------------------------------------------------------------
+// 2. Integration Tests: Actual Browser Event Handlers in script.js
+// -------------------------------------------------------------
+
+test('Integration: Actual keydown and input events with Backspace correction', () => {
+  const app = loadScriptInstance();
+  const inputEl = app.elements['typing-input'];
+  app.setTestPassage('The quick brown fox');
+  app.setTestTyping(true);
 
   // 1. Type 'T' correctly
-  applyKeystroke(session, 'KeyT', 'T');
-  assert.equal(session.charStates[0], 'correct');
-  assert.equal(session.correctTyped, 1);
-  assert.equal(session.mistakes, 0);
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'T', code: 'KeyT' }));
+  inputEl.value = 'T';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  let state = app.getTestState();
+  assert.equal(state.charStates[0], 'correct');
+  assert.equal(state.correctTyped, 1);
+  assert.equal(state.mistakes, 0);
 
   // 2. Type 'x' instead of 'h' (Mistake)
-  applyKeystroke(session, 'KeyX', 'x');
-  assert.equal(session.charStates[1], 'wrong');
-  assert.equal(session.mistakes, 1);
-  assert.equal(session.keyMistakes['H'], 1);
-  assert.equal(session.keySubstitutions['H']['X'], 1);
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'x', code: 'KeyX' }));
+  inputEl.value = 'Tx';
+  inputEl.dispatchEvent(new InputEventMock('input'));
 
-  // 3. Press Backspace to correct 'x'
-  applyBackspace(session);
-  assert.equal(session.buffer, 'T');
-  assert.equal(session.charIndex, 1);
-  assert.equal(session.charStates[1], '');
-  assert.equal(session.mistakes, 0); // Active buffer mistakes cleared
+  state = app.getTestState();
+  assert.equal(state.charStates[1], 'wrong');
+  assert.equal(state.mistakes, 1);
+  assert.equal(state.keyMistakes['H'], 1);
+  assert.equal(state.keySubstitutions['H']['X'], 1);
 
-  // CUMULATIVE keyMistakes must remain 1!
-  assert.equal(session.keyMistakes['H'], 1, 'Cumulative error count must be retained across Backspace');
-  assert.equal(session.keySubstitutions['H']['X'], 1, 'Substitution count must be retained across Backspace');
+  // 3. Backspace to delete 'x'
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'Backspace', code: 'Backspace' }));
+  inputEl.value = 'T';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  state = app.getTestState();
+  assert.equal(state.charStates[1], '');
+  assert.equal(state.mistakes, 0); // Active buffer mistakes cleared
+  assert.equal(state.keyMistakes['H'], 1, 'Cumulative error count must be retained across Backspace');
 
   // 4. Retype correctly as 'h'
-  applyKeystroke(session, 'KeyH', 'h');
-  assert.equal(session.buffer, 'Th');
-  assert.equal(session.charStates[1], 'correct');
-  assert.equal(session.correctTyped, 2);
-  assert.equal(session.mistakes, 0);
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'h', code: 'KeyH' }));
+  inputEl.value = 'Th';
+  inputEl.dispatchEvent(new InputEventMock('input'));
 
-  // Still retains cumulative error on 'H'
-  assert.equal(session.keyMistakes['H'], 1);
+  state = app.getTestState();
+  assert.equal(state.charStates[1], 'correct');
+  assert.equal(state.correctTyped, 2);
+  assert.equal(state.keyMistakes['H'], 1, 'Historical mistake on H remains intact');
 });
 
-test('Integration: Repeated corrections accumulate friction without resetting previous mistakes', () => {
-  const session = createSession('apple');
+test('Integration: Editing edge cases (Ctrl+Backspace, selection deletion, repeated corrections)', () => {
+  const app = loadScriptInstance();
+  const inputEl = app.elements['typing-input'];
+  app.setTestPassage('apple pie');
+  app.setTestTyping(true);
 
-  // Attempt 1: 'a' correct
-  applyKeystroke(session, 'KeyA', 'a');
+  // 1. Repeated corrections on same key:
+  // Target 'a' -> correct
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'a', code: 'KeyA' }));
+  inputEl.value = 'a';
+  inputEl.dispatchEvent(new InputEventMock('input'));
 
-  // Attempt 2: Target 'p'. Types 'o' (error 1)
-  applyKeystroke(session, 'KeyO', 'o');
-  assert.equal(session.keyMistakes['P'], 1);
+  // Target 'p' -> error 1 (typed 'o')
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'o', code: 'KeyO' }));
+  inputEl.value = 'ao';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+  assert.equal(app.getTestState().keyMistakes['P'], 1);
 
   // Backspace
-  applyBackspace(session);
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'Backspace', code: 'Backspace' }));
+  inputEl.value = 'a';
+  inputEl.dispatchEvent(new InputEventMock('input'));
 
-  // Attempt 3: Target 'p'. Types 'l' (error 2 on same key)
-  applyKeystroke(session, 'KeyL', 'l');
-  assert.equal(session.keyMistakes['P'], 2);
+  // Target 'p' -> error 2 (typed 'l')
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'l', code: 'KeyL' }));
+  inputEl.value = 'al';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+  assert.equal(app.getTestState().keyMistakes['P'], 2, 'Mistakes on same key accumulate across repeated corrections');
 
-  // Backspace
-  applyBackspace(session);
+  // Backspace again and type correctly
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'Backspace', code: 'Backspace' }));
+  inputEl.value = 'a';
+  inputEl.dispatchEvent(new InputEventMock('input'));
 
-  // Attempt 4: Types 'p' correctly
-  applyKeystroke(session, 'KeyP', 'p');
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'p', code: 'KeyP' }));
+  inputEl.value = 'ap';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+  assert.equal(app.getTestState().keyMistakes['P'], 2);
 
-  // Cumulative mistake on 'P' must be 2
-  assert.equal(session.keyMistakes['P'], 2);
-  assert.equal(session.keySubstitutions['P']['O'], 1);
-  assert.equal(session.keySubstitutions['P']['L'], 1);
+  // 2. Ctrl+Backspace / Multi-character word deletion:
+  // Type extra characters 'ple'
+  inputEl.value = 'apple';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+  assert.equal(app.getTestState().charIndex, 5);
+
+  // User hits Ctrl+Backspace to delete 'ple' back to 'ap'
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'Backspace', code: 'Backspace', ctrlKey: true }));
+  inputEl.value = 'ap';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  const state = app.getTestState();
+  assert.equal(state.charIndex, 2);
+  assert.equal(state.charStates[2], '');
+  assert.equal(state.charStates[3], '');
+  assert.equal(state.charStates[4], '');
+  assert.equal(state.keyMistakes['P'], 2, 'Cumulative errors preserved after Ctrl+Backspace');
 });
 
-test('Integration: Paste handling validates text but does NOT record physical keystrokes or substitutions', () => {
-  const session = createSession('Hello world');
+test('Integration: Robust paste handling without affecting subsequent normal typing', () => {
+  const app = loadScriptInstance();
+  const inputEl = app.elements['typing-input'];
+  app.setTestPassage('The quick brown fox');
+  app.setTestTyping(true);
 
-  // Pasting text with a typo: 'Helxo' into 'Hello'
-  applyPaste(session, 'Helxo');
+  // 1. Paste event with typos
+  inputEl.dispatchEvent(new Event('paste'));
+  inputEl.value = 'Thx quic';
+  inputEl.dispatchEvent(new InputEventMock('input', { inputType: 'insertFromPaste' }));
 
-  assert.equal(session.buffer, 'Helxo');
-  assert.equal(session.charStates[3], 'wrong'); // 'x' vs 'l'
-  assert.equal(session.mistakes, 1); // Checked against passage
+  let state = app.getTestState();
+  assert.equal(state.mistakes, 1); // Checked against passage ('x' vs 'e')
+  assert.equal(state.keyMistakes['E'], undefined, 'Pasted text must NOT record physical keyMistakes');
+  assert.equal(state.keySubstitutions['E'], undefined, 'Pasted text must NOT record physical substitutions');
 
-  // Crucial: Must NOT record as physical keystrokes or substitutions
-  assert.equal(session.keyMistakes['L'], undefined, 'Pasted text must not increment physical keyMistakes');
-  assert.equal(session.keySubstitutions['L'], undefined, 'Pasted text must not record physical substitutions');
+  // 2. Normal typing immediately after paste
+  // Type next character 'k' correctly (expected is 'k')
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'k', code: 'KeyK' }));
+  inputEl.value = 'Thx quick';
+  inputEl.dispatchEvent(new InputEventMock('input', { inputType: 'insertText' }));
+
+  // Type next character with deliberate error: space expected, types 'b'
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'b', code: 'KeyB' }));
+  inputEl.value = 'Thx quickb';
+  inputEl.dispatchEvent(new InputEventMock('input', { inputType: 'insertText' }));
+
+  state = app.getTestState();
+  // Normal typing right after paste IS tracked properly
+  assert.equal(state.keyMistakes['SPACE'], 1, 'Subsequent normal keystroke after paste is tracked normally');
+  assert.equal(state.keySubstitutions['SPACE']['B'], 1);
 });

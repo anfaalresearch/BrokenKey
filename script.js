@@ -53,6 +53,7 @@ let lastProcessedLength = 0;
 function resolvePhysicalKey(code, key = '') {
   if (code) {
     if (code === 'Space') return 'SPACE';
+    if (code === 'Enter') return 'ENTER';
     if (code.startsWith('Key') && code.length === 4) return code.slice(3).toUpperCase();
     if (code.startsWith('Digit') && code.length === 6) return code.slice(5);
     if (code === 'BracketLeft') return '[';
@@ -66,17 +67,18 @@ function resolvePhysicalKey(code, key = '') {
     if (code === 'Period') return '.';
     if (code === 'Minus') return '-';
     if (code === 'Equal') return '=';
-    if (code === 'Enter') return 'ENTER';
   }
   // Fallback for virtual / mobile keyboards without physical code
-  if (key === ' ' || key === '\n') return 'SPACE';
+  if (key === ' ') return 'SPACE';
+  if (key === '\n' || key === 'Enter') return 'ENTER';
   if (typeof key === 'string' && key.length === 1) return key.toUpperCase();
   return null;
 }
 
 function resolveExpectedKey(char) {
   if (!char) return null;
-  if (char === ' ' || char === '\n') return 'SPACE';
+  if (char === ' ') return 'SPACE';
+  if (char === '\n') return 'ENTER';
   return char.toUpperCase();
 }
 
@@ -101,7 +103,7 @@ const KEYBOARD_ROWS = [
   ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
   ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
   ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
-  ['SPACE']
+  ['SPACE', 'ENTER']
 ];
 
 function initKeyboard() {
@@ -111,8 +113,11 @@ function initKeyboard() {
     html += '<div class="kb-row">';
     row.forEach((key) => {
       const isSpace = key === 'SPACE';
-      const label = isSpace ? 'Space' : key;
-      const keyClass = isSpace ? 'kb-key kb-space' : 'kb-key';
+      const isEnter = key === 'ENTER';
+      let label = key;
+      if (isSpace) label = 'Space';
+      if (isEnter) label = 'Enter';
+      const keyClass = isSpace ? 'kb-key kb-space' : (isEnter ? 'kb-key kb-enter' : 'kb-key');
       html += `<div class="${keyClass}" data-key="${key}"><span class="kb-char">${label}</span><span class="kb-err">0</span></div>`;
     });
     html += '</div>';
@@ -138,7 +143,9 @@ function updateHeatmap(reset = false) {
     lastProcessedLength = 0;
     keyEls.forEach((el) => {
       const isSpace = el.dataset.key === 'SPACE';
-      el.className = isSpace ? 'kb-key kb-space intensity-0' : 'kb-key intensity-0';
+      const isEnter = el.dataset.key === 'ENTER';
+      const baseClass = isSpace ? 'kb-key kb-space' : (isEnter ? 'kb-key kb-enter' : 'kb-key');
+      el.className = baseClass + ' intensity-0';
       const errEl = el.querySelector('.kb-err');
       if (errEl) errEl.textContent = '0';
     });
@@ -149,8 +156,10 @@ function updateHeatmap(reset = false) {
     const rawKey = el.dataset.key;
     const count = keyMistakes[rawKey] || 0;
     const isSpace = rawKey === 'SPACE';
+    const isEnter = rawKey === 'ENTER';
+    const baseClass = isSpace ? 'kb-key kb-space ' : (isEnter ? 'kb-key kb-enter ' : 'kb-key ');
     const intensity = getHeatmapIntensity(count);
-    el.className = (isSpace ? 'kb-key kb-space ' : 'kb-key ') + intensity;
+    el.className = baseClass + intensity;
     const errEl = el.querySelector('.kb-err');
     if (errEl) errEl.textContent = count;
   });
@@ -280,11 +289,17 @@ function escapeHTML(value) {
 }
 
 let isPasting = false;
-inputEl.addEventListener('paste', () => {
-  isPasting = true;
-});
+let pasteResetTimeout = null;
 
-inputEl.addEventListener('keydown', (event) => {
+function handlePaste() {
+  isPasting = true;
+  clearTimeout(pasteResetTimeout);
+  pasteResetTimeout = setTimeout(() => {
+    isPasting = false;
+  }, 100);
+}
+
+function handleKeyDown(event) {
   // Allow default Backspace behavior so users can correct typos (coordinates with PR #36)
   if (event.key === 'Backspace') {
     return;
@@ -313,12 +328,17 @@ inputEl.addEventListener('keydown', (event) => {
     lastTrackedKeydownPos = currentPos;
     updateHeatmap();
   }
-});
+}
 
-inputEl.addEventListener('input', (event) => {
+function handleInput(event) {
   const typed = inputEl.value;
-  const wasPasted = isPasting || (event && event.inputType === 'insertFromPaste');
+  const wasPasted = Boolean(
+    isPasting ||
+    (event && (event.inputType === 'insertFromPaste' || event.inputType === 'insertReplacementText')) ||
+    (typed.length - lastProcessedLength > 1)
+  );
   isPasting = false;
+  clearTimeout(pasteResetTimeout);
 
   totalTyped = 0;
   correctTyped = 0;
@@ -360,7 +380,13 @@ inputEl.addEventListener('input', (event) => {
   updateStats();
 
   if (charIndex === currentPassage.length) finishTest();
-});
+}
+
+if (inputEl) {
+  inputEl.addEventListener('paste', handlePaste);
+  inputEl.addEventListener('keydown', handleKeyDown);
+  inputEl.addEventListener('input', handleInput);
+}
 
 function calculateWPM() {
   if (!startTime) return 0;
@@ -450,6 +476,8 @@ function resetTest() {
   clearInterval(timer);
   timer = null;
   isTyping = false;
+  isPasting = false;
+  clearTimeout(pasteResetTimeout);
   startTime = null;
   charIndex = 0;
   mistakes = 0;
@@ -534,3 +562,36 @@ document.querySelectorAll('.wasd-key').forEach((key) => {
   const btn = $(btnId), card = $(cardId);
   if (btn && card) btn.addEventListener('click', () => card.scrollIntoView({ behavior: 'smooth', block: 'center' }));
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    passages,
+    resolvePhysicalKey,
+    resolveExpectedKey,
+    recordSubstitution,
+    getTopSubstitution,
+    getHeatmapIntensity,
+    calculateWPM,
+    calculateAccuracy,
+    updateHeatmap,
+    resetTest,
+    finishTest,
+    handleKeyDown,
+    handleInput,
+    handlePaste,
+    getTestState: () => ({
+      keyMistakes,
+      keySubstitutions,
+      charStates,
+      charIndex,
+      mistakes,
+      correctTyped,
+      totalTyped,
+      isTyping,
+      currentPassage,
+      inputEl
+    }),
+    setTestPassage: (p) => { currentPassage = p; },
+    setTestTyping: (v) => { isTyping = v; }
+  };
+}
