@@ -7,6 +7,16 @@ const playerPassage = document.getElementById("player-passage");
 const ghostPassage = document.getElementById("ghost-passage");
 
 const playerInput = document.getElementById("player-input");
+const pasteWarning = document.createElement("p");
+
+pasteWarning.id = "paste-warning";
+pasteWarning.className = "paste-warning";
+pasteWarning.textContent =
+    "Pasting doesn't qualify you for a win. Type the full passage manually to complete the race.";
+
+pasteWarning.hidden = true;
+
+playerInput.insertAdjacentElement("afterend", pasteWarning);
 
 const playerWpm = document.getElementById("player-wpm");
 const playerAccuracy = document.getElementById("player-accuracy");
@@ -20,6 +30,20 @@ const startBtn = document.getElementById("start-ghost-btn");
 const resetBtn = document.getElementById("reset-ghost-btn");
 const message = document.getElementById("ghost-message");
 const themeBtn = document.getElementById("theme-btn");
+const raceTimer = document.getElementById("race-timer");
+const raceResults = document.getElementById("race-results");
+const winnerHeading = document.getElementById("winner-heading");
+
+const playerFinalWpm = document.getElementById("player-final-wpm");
+const playerFinalAccuracy = document.getElementById("player-final-accuracy");
+const playerFinalScore = document.getElementById("player-final-score");
+
+const ghostFinalWpm = document.getElementById("ghost-final-wpm");
+const ghostFinalAccuracy = document.getElementById("ghost-final-accuracy");
+const ghostFinalScore = document.getElementById("ghost-final-score");
+
+const completionStatus = document.getElementById("completion-status");
+const timeDifference = document.getElementById("time-difference");
 
 // Typing passages
 const passages = [
@@ -29,18 +53,33 @@ const passages = [
     "A journey of a thousand miles begins with a single step."
 ];
 
+let previousInputValue = "";
+let pendingInput = null;
+let pendingPaste = null;
+
 let passage = "";
 let startTime = 0;
 
 let playerAttempts = 0;
+let playerWpmAttempts = 0;
 let playerMistakes = 0;
-let previousInput = "";
+let playerManualCharacters = [];
 
 let ghostAttempts = 0;
 let ghostMistakes = 0;
 
 let running = false;
+let timeLeft = 30;
+let timerInterval = null;
+
+let playerFinished = false;
 let ghostFinished = false;
+let raceEnded = false;
+
+let playerFinishTime = null;
+let ghostFinishTime = null;
+let targetWpm = 0;
+
 let simulationId = 0;
 
 // Difficulty settings
@@ -115,12 +154,11 @@ function calculateWPM(attempts, elapsed) {
 
 // Calculate accuracy
 function calculateAccuracy(attempts, mistakes) {
-    if (attempts === 0) return 100;
+    if (attempts === 0) {
+        return 0;
+    }
 
-    return Math.max(
-        0,
-        Math.round(((attempts - mistakes) / attempts) * 100)
-    );
+    return ((attempts - mistakes) / attempts) * 100;
 }
 
 // Update player display
@@ -146,45 +184,191 @@ if (typed.length < passage.length) {
 }
     const elapsed = Date.now() - startTime;
 
-    playerWpm.textContent = calculateWPM(playerAttempts, elapsed);
+    playerWpm.textContent = calculateWPM(playerWpmAttempts, elapsed);
     playerAccuracy.textContent =
         calculateAccuracy(playerAttempts, playerMistakes) + "%";
 
     playerProgress.textContent =
         Math.round((typed.length / passage.length) * 100) + "%";
 
-    if (typed === passage) {
-        playerInput.disabled = true;
-        message.textContent = "You completed the passage!";
-        message.classList.remove("hidden");
+    const entirePassageTypedManually =
+    playerManualCharacters.length === passage.length &&
+    playerManualCharacters.every(Boolean);
+
+if (
+    typed === passage &&
+    entirePassageTypedManually
+) {
+    playerFinished = true;
+    playerFinishTime = Date.now() - startTime;
+
+    playerInput.disabled = true;
+
+    message.textContent = ghostFinished
+    ? "Both you and the ghost completed the passage!"
+    : "You completed the passage! Ghost is still typing.";
+
+    message.classList.remove("hidden");
+
+    if (ghostFinished) {
+        endRace();
     }
 }
+}
 
-// Player typing event
+
+
+
+// ===== PLAYER ACCURACY TRACKING =====
+
+// Fallback: identify the changed portion if beforeinput
+// information is unavailable.
+function getTextChange(oldValue, newValue) {
+    let start = 0;
+
+    while (
+        start < oldValue.length &&
+        start < newValue.length &&
+        oldValue[start] === newValue[start]
+    ) {
+        start++;
+    }
+
+    let oldEnd = oldValue.length;
+    let newEnd = newValue.length;
+
+    while (
+        oldEnd > start &&
+        newEnd > start &&
+        oldValue[oldEnd - 1] === newValue[newEnd - 1]
+    ) {
+        oldEnd--;
+        newEnd--;
+    }
+
+    return {
+        index: start,
+        removedLength: oldEnd - start,
+        text: newValue.slice(start, newEnd)
+    };
+}
+
+// Record the selection and input type before an edit.
+playerInput.addEventListener("beforeinput", (event) => {
+    pendingInput = {
+        start: playerInput.selectionStart,
+        end: playerInput.selectionEnd,
+        inputType: event.inputType,
+        data: event.data
+    };
+
+    // Keep paste information only for a paste operation.
+    if (event.inputType !== "insertFromPaste") {
+        pendingPaste = null;
+    }
+});
+
+// Capture pasted text and the selection it replaces.
+playerInput.addEventListener("paste", (event) => {
+    pendingPaste = {
+        text: event.clipboardData.getData("text"),
+        start: playerInput.selectionStart,
+        end: playerInput.selectionEnd
+    };
+});
+
+// Process the actual change after the browser updates the textarea.
 playerInput.addEventListener("input", () => {
-    if (!running) return;
+    const oldValue = previousInputValue;
+    const newValue = playerInput.value;
 
-    const currentInput = playerInput.value;
+    if (!running) {
+        previousInputValue = newValue;
+        pendingInput = null;
+        pendingPaste = null;
+        return;
+    }
 
-    // Count newly entered characters
-    if (currentInput.length > previousInput.length) {
-        const added = currentInput.length - previousInput.length;
-        const startIndex = previousInput.length;
+    const edit = pendingInput;
 
-        playerAttempts += added;
+    let change;
 
-        for (let i = 0; i < added; i++) {
-            const index = startIndex + i;
+    // Use the original selection for insertion and replacement.
+    if (
+        edit &&
+        typeof edit.inputType === "string" &&
+        edit.inputType.startsWith("insert")
+    ) {
+        const removedLength = edit.end - edit.start;
 
-            if (currentInput[index] !== passage[index]) {
-                playerMistakes++;
-            }
+        const insertedLength = Math.max(
+            0,
+            newValue.length -
+            (oldValue.length - removedLength)
+        );
+
+        change = {
+            index: edit.start,
+            removedLength: removedLength,
+            text: newValue.slice(
+                edit.start,
+                edit.start + insertedLength
+            )
+        };
+    } else {
+        // Handle deletion and browser fallback.
+        change = getTextChange(oldValue, newValue);
+    }
+
+    const insertedText = change.text;
+    const insertionIndex = change.index;
+
+    const isPaste =
+        (edit && edit.inputType === "insertFromPaste") ||
+        pendingPaste !== null;
+
+    if (isPaste) {
+        pasteWarning.hidden = false;
+    }
+
+    // Only actual manual typing counts towards completion and WPM.
+    const isManualInsertion =
+        !isPaste &&
+        (
+            !edit ||
+            edit.inputType === "insertText" ||
+            edit.inputType === "insertCompositionText"
+        );
+
+    // Update the manual-origin tracking for the current input.
+    playerManualCharacters.splice(
+        change.index,
+        change.removedLength,
+        ...Array(insertedText.length).fill(isManualInsertion)
+    );
+
+    // Count inserted characters for accuracy and WPM.
+    for (let i = 0; i < insertedText.length; i++) {
+        playerAttempts++;
+
+        if (isManualInsertion) {
+            playerWpmAttempts++;
+        }
+
+        if (
+            insertedText[i] !== passage[insertionIndex + i]
+        ) {
+            playerMistakes++;
         }
     }
 
-    previousInput = currentInput;
+    previousInputValue = newValue;
+    pendingInput = null;
+    pendingPaste = null;
+
     updatePlayer();
 });
+
 
 // Wait for a specified time
 function wait(ms) {
@@ -201,7 +385,7 @@ async function startGhost(id) {
 
     for (let i = 0; i < passage.length; i++) {
 
-        if (id !== simulationId) return;
+       if (id !== simulationId || !running) return;
 
         // Calculate typing delay from target WPM
         const baseDelay = 60000 / (settings.wpm * 5);
@@ -209,7 +393,7 @@ async function startGhost(id) {
 
         await wait(delay);
 
-        if (id !== simulationId) return;
+        if (id !== simulationId || !running) return;
 
         ghostAttempts++;
 
@@ -217,16 +401,17 @@ async function startGhost(id) {
         const makesMistake = Math.random() * 100 > settings.accuracy;
 
         if (makesMistake) {
-            ghostMistakes++;
+    ghostMistakes++;
 
-            characters[i].classList.add("wrong");
-            characters[i].textContent = "✕";
+    characters[i].classList.add("wrong");
+    characters[i].textContent = "✕";
 
-            await wait(250);
+    await wait(250);
 
-            if (id !== simulationId) return;
-        }
+    if (id !== simulationId || !running) return;
 
+    ghostAttempts++; // Count the corrected character as another attempt
+}
         // Correct character appears
         characters[i].textContent = passage[i];
         characters[i].classList.remove("wrong");
@@ -248,17 +433,27 @@ async function startGhost(id) {
             Math.round(((i + 1) / passage.length) * 100) + "%";
     }
 
-    if (id === simulationId) {
+    if (id === simulationId && running) {
     ghostFinished = true;
+    ghostFinishTime = Date.now() - startTime;
 
     message.classList.remove("hidden");
-    message.textContent = "Ghost completed the passage!";
+
+    message.textContent = playerFinished
+    ? "Both you and the ghost completed the passage!"
+    : "Ghost completed the passage! You can continue typing.";  
+
+    if (playerFinished) {
+        endRace();
+    }
 }
 }
 
 // Start Ghost Mode
 startBtn.addEventListener("click", () => {
-    if (!getDifficultySettings()) {
+    const settings = getDifficultySettings();
+
+    if (!settings) {
         updateDifficultySelection();
         return;
     }
@@ -266,12 +461,15 @@ startBtn.addEventListener("click", () => {
     resetGame();
 
     passage = passages[Math.floor(Math.random() * passages.length)];
+    playerInput.maxLength = passage.length;
 
     renderPassage(playerPassage, passage);
     renderPassage(ghostPassage, passage);
-    // Show starting cursor in both panels
+
     playerPassage.querySelector(".char").classList.add("current");
     ghostPassage.querySelector(".char").classList.add("current");
+
+    targetWpm = settings.wpm;
 
     running = true;
     startTime = Date.now();
@@ -283,20 +481,141 @@ startBtn.addEventListener("click", () => {
     startBtn.disabled = true;
     message.classList.add("hidden");
 
+    startRaceTimer();
+
     const currentId = simulationId;
     startGhost(currentId);
 });
 
+function startRaceTimer() {
+    timeLeft = 30;
+    raceTimer.textContent = timeLeft;
+
+    timerInterval = setInterval(() => {
+        timeLeft--;
+        raceTimer.textContent = timeLeft;
+
+        if (timeLeft <= 0) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            endRace();
+        }
+    }, 1000);
+}
+function calculateFinalScore(
+    wpmAttempts,
+    accuracyAttempts,
+    mistakes,
+    elapsed
+) {
+    const wpm = calculateWPM(wpmAttempts, elapsed);
+    const accuracy = calculateAccuracy(accuracyAttempts, mistakes);
+
+    const normalizedWpm = Math.min(
+    (wpm / targetWpm) * 100,
+    100
+);
+
+    const score = (0.70 * normalizedWpm) + (0.30 * accuracy);
+
+    return { wpm, accuracy, score };
+}
+
+function endRace() {
+    if (raceEnded) return;
+
+    raceEnded = true;
+    running = false;
+
+    clearInterval(timerInterval);
+    timerInterval = null;
+
+    // Stop any remaining ghost typing
+    simulationId++;
+
+    playerInput.disabled = true;
+    difficulty.disabled = false;
+    startBtn.disabled = false;
+
+    const elapsed = Date.now() - startTime;
+
+    const playerTime = playerFinishTime ?? elapsed;
+    const ghostTime = ghostFinishTime ?? elapsed;
+
+    const playerResult = calculateFinalScore(
+    playerWpmAttempts,
+    playerAttempts,
+    playerMistakes,
+    playerTime
+);
+
+
+    const ghostResult = calculateFinalScore(
+    ghostAttempts,
+    ghostAttempts,
+    ghostMistakes,
+    ghostTime
+);
+
+    playerFinalWpm.textContent = playerResult.wpm;
+    playerFinalAccuracy.textContent = playerResult.accuracy.toFixed(1) + "%";
+    playerFinalScore.textContent = playerResult.score.toFixed(2);
+
+    ghostFinalWpm.textContent = ghostResult.wpm;
+    ghostFinalAccuracy.textContent = ghostResult.accuracy.toFixed(1) + "%";
+    ghostFinalScore.textContent = ghostResult.score.toFixed(2);
+
+    if (playerFinished && !ghostFinished) {
+    winnerHeading.textContent = "YOU WIN!";
+} else if (ghostFinished && !playerFinished) {
+    winnerHeading.textContent = "GHOST WINS!";
+} else if (playerResult.score > ghostResult.score) {
+    winnerHeading.textContent = "YOU WIN!";
+} else if (ghostResult.score > playerResult.score) {
+    winnerHeading.textContent = "GHOST WINS!";
+} else {
+    winnerHeading.textContent = "IT'S A DRAW!";
+}
+
+    if (playerFinished && ghostFinished) {
+    completionStatus.textContent =
+        "Completion time difference: " +
+        (Math.abs(playerFinishTime - ghostFinishTime) / 1000).toFixed(2) +
+        " seconds";
+} else {
+    completionStatus.textContent = "";
+}
+
+timeDifference.textContent = "";
+    raceResults.classList.remove("hidden");
+}
 // Reset game
 function resetGame() {
     simulationId++;
 
+    clearInterval(timerInterval);
+    timerInterval = null;
+
     running = false;
+    raceEnded = false;
+
+    playerFinished = false;
     ghostFinished = false;
+
+    playerFinishTime = null;
+    ghostFinishTime = null;
+
+    timeLeft = 30;
+    raceTimer.textContent = "30";
 
     playerAttempts = 0;
     playerMistakes = 0;
-    previousInput = "";
+    playerWpmAttempts = 0;
+    playerManualCharacters = [];
+    pasteWarning.hidden = true;
+    previousInputValue = "";
+    pendingInput = null;
+    pendingPaste = null;
 
     ghostAttempts = 0;
     ghostMistakes = 0;
@@ -305,10 +624,11 @@ function resetGame() {
     playerInput.disabled = true;
 
     playerWpm.textContent = "0";
-    playerAccuracy.textContent = "100%";
+    playerAccuracy.textContent = "0%";
+
 
     ghostWpm.textContent = "0";
-    ghostAccuracy.textContent = "100%";
+    ghostAccuracy.textContent = "0%";
 
     playerProgress.textContent = "0%";
     ghostProgress.textContent = "0%";
@@ -321,6 +641,9 @@ function resetGame() {
 
     message.textContent = "";
     message.classList.add("hidden");
+
+    raceResults.classList.add("hidden");
+
     updateDifficultySelection();
 }
 
@@ -337,3 +660,34 @@ themeBtn.addEventListener("click", () => {
             : "☼ Light mode";
 });
 updateDifficultySelection();
+// ===== RULES POPUP =====
+
+const rulesBtn = document.getElementById("rules-btn");
+const rulesModal = document.getElementById("rules-modal");
+const closeRulesBtn = document.getElementById("close-rules-btn");
+
+rulesBtn.addEventListener("click", () => {
+    rulesModal.hidden = false;
+    closeRulesBtn.focus();
+});
+
+closeRulesBtn.addEventListener("click", () => {
+    rulesModal.hidden = true;
+    rulesBtn.focus();
+});
+
+// Close when clicking outside the popup
+rulesModal.addEventListener("click", (event) => {
+    if (event.target === rulesModal) {
+        rulesModal.hidden = true;
+        rulesBtn.focus();
+    }
+});
+
+// Close using Escape
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !rulesModal.hidden) {
+        rulesModal.hidden = true;
+        rulesBtn.focus();
+    }
+});

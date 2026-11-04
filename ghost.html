@@ -9,18 +9,43 @@
 </head>
 <body>
   <main class="container ghost-container">
+    <!-- Spider Web Decorations -->
+<div class="spider-web web-top-left" aria-hidden="true"></div>
+<div class="spider-web web-top-right" aria-hidden="true"></div>
 
-    <header class="topbar">
-      <div class="brand-copy">
-        <h1>Ghost Mode</h1>
-        <p class="eyebrow">THINK YOU CAN WIN?</p>
-      </div>
-      <button id="theme-btn" class="icon-btn" type="button">
-        ☼ Light mode
-      </button>
-    </header>
+<!-- Hanging Spiders -->
+<div class="hanging-spider spider-left" aria-hidden="true">
+  <span class="spider-thread"></span>
+  <span class="spider-body">●</span>
+  <span class="spider-legs">╱╲╱╲</span>
+</div>
+
+<div class="hanging-spider spider-right" aria-hidden="true">
+  <span class="spider-thread"></span>
+  <span class="spider-body">●</span>
+  <span class="spider-legs">╱╲╱╲</span>
+</div>
+  <header class="topbar">
+  <div class="brand-copy">
+    <h1>Ghost Mode</h1>
+    <p class="eyebrow">THINK YOU CAN WIN?</p>
+  </div>
+
+  <div class="race-timer">
+    <span>TIME LEFT</span>
+    <strong id="race-timer">30</strong>
+    <span>SECONDS</span>
+  </div>
+
+  <button id="theme-btn" class="icon-btn" type="button">
+    ☼ Light mode
+  </button>
+</header>
 
     <section class="test-panel">
+      <button id="rules-btn" type="button" class="rules-btn">
+    📜 Rules
+</button>
 
       <h2>Select Difficulty</h2>
 
@@ -74,13 +99,13 @@
       </div>
 
       <div class="controls">
-        <button id="start-ghost-btn" class="btn btn-primary">
-          TRY ME
+        <button id="start-ghost-btn" class="btn btn-primary" type="button">
+            TRY ME
         </button>
 
-        <button id="reset-ghost-btn" class="btn btn-secondary">
-          Reset
-        </button>
+      <button id="reset-ghost-btn" class="btn btn-secondary" type="button">
+            Reset
+      </button>
 
         <a href="index.html" class="btn btn-secondary">
           Back to KeyRush
@@ -88,6 +113,66 @@
       </div>
 
       <div id="ghost-message" class="result hidden"></div>
+     
+      <!-- Race Results -->
+<div id="race-results" class="race-results hidden">
+  <h2 id="winner-heading">Race Results</h2>
+
+  <div class="result-comparison">
+    <div>
+      <h3>YOU</h3>
+      <p>WPM: <strong id="player-final-wpm">0</strong></p>
+      <p>Accuracy: <strong id="player-final-accuracy">0%</strong></p>
+      <p>Score: <strong id="player-final-score">0</strong></p>
+    </div>
+
+    <div>
+      <h3>GHOST</h3>
+      <p>WPM: <strong id="ghost-final-wpm">0</strong></p>
+      <p>Accuracy: <strong id="ghost-final-accuracy">0%</strong></p>
+      <p>Score: <strong id="ghost-final-score">0</strong></p>
+    </div>
+  </div>
+
+  <p id="completion-status"></p>
+  <p id="time-difference"></p>
+</div>
+ <!-- Rules Popup -->
+<div id="rules-modal" class="rules-modal" hidden>
+    <div class="rules-modal-content"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="rules-title">
+
+        <h2 id="rules-title">👻 Ghost Mode Rules</h2>
+
+        <div class="rules-content">
+            <div class="rule-group">
+                <h3>🏆 How to Win</h3>
+                <ul>
+                    <li>If only one participant finishes, they win.</li>
+                    <li>If both finish, the higher score wins.</li>
+                    <li>If neither finishes, the higher score wins.</li>
+                    <li>Equal scores result in a draw.</li>
+                </ul>
+            </div>
+
+            <div class="rule-group">
+                <h3>⏱️ Race Rules</h3>
+                <ul>
+                    <li>Each race lasts 30 seconds.</li>
+                    <li>Both participants receive the same passage.</li>
+                    <li>If one finishes early, the other can continue typing.</li>
+                    <li>The race ends when both finish or time runs out.</li>
+                </ul>
+            </div>
+        </div>
+
+        <button id="close-rules-btn" type="button">
+            ← Back
+        </button>
+    </div>
+</div>
 
     </section>
   </main>
