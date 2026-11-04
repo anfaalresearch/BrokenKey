@@ -270,6 +270,50 @@ test('Integration: Editing edge cases (Ctrl+Backspace, selection deletion, repea
   assert.equal(state.keyMistakes['P'], 2, 'Cumulative errors preserved after Ctrl+Backspace');
 });
 
+test('Integration: Middle-of-text selection deletion and replacement at arbitrary cursor position', () => {
+  const app = loadScriptInstance();
+  const inputEl = app.elements['typing-input'];
+  app.setTestPassage('The quick brown fox');
+  app.setTestTyping(true);
+
+  // 1. Initial typing: "The quick" (9 characters, all correct)
+  inputEl.value = 'The quick';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  let state = app.getTestState();
+  assert.equal(state.charIndex, 9);
+  assert.equal(state.correctTyped, 9);
+  assert.equal(state.mistakes, 0);
+
+  // 2. Middle-of-text selection deletion:
+  // User selects "quick" (from index 4 to 9) and deletes it -> text becomes "The "
+  inputEl.value = 'The ';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  state = app.getTestState();
+  assert.equal(state.charIndex, 4);
+  assert.equal(state.correctTyped, 4);
+  assert.equal(state.mistakes, 0);
+  assert.equal(state.charStates[4], '');
+  assert.equal(state.charStates[5], '');
+  assert.equal(state.charStates[8], '');
+
+  // 3. Middle-of-text replacement at arbitrary cursor position:
+  // User types "quack" instead -> "The quack" ('a' is wrong at index 6)
+  inputEl.value = 'The quack';
+  inputEl.dispatchEvent(new InputEventMock('input'));
+
+  state = app.getTestState();
+  assert.equal(state.charIndex, 9);
+  assert.equal(state.correctTyped, 8); // 'T', 'h', 'e', ' ', 'q', 'u', 'c', 'k' are correct
+  assert.equal(state.mistakes, 1);    // 'a' vs 'i' is wrong
+  assert.equal(state.charStates[6], 'wrong');
+  assert.equal(state.charStates[4], 'correct'); // 'q'
+  assert.equal(state.charStates[5], 'correct'); // 'u'
+  assert.equal(state.charStates[7], 'correct'); // 'c'
+  assert.equal(state.charStates[8], 'correct'); // 'k'
+});
+
 test('Integration: Robust paste handling without affecting subsequent normal typing', () => {
   const app = loadScriptInstance();
   const inputEl = app.elements['typing-input'];
