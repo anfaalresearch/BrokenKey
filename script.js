@@ -312,7 +312,9 @@ function handleKeyDown(event) {
   if (event.key.length > 1 && event.key !== 'Enter') return;
 
   if (!isTyping || !currentPassage) return;
-  const currentPos = inputEl.value.length;
+  const currentPos = (inputEl && typeof inputEl.selectionStart === 'number')
+    ? inputEl.selectionStart
+    : inputEl.value.length;
   if (currentPos >= currentPassage.length) return;
 
   const expectedChar = currentPassage[currentPos];

@@ -27,6 +27,8 @@ class MockElement extends EventTarget {
     };
     this.style = {};
     this.disabled = false;
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
   }
   querySelector() { return new MockElement(); }
   querySelectorAll() { return [new MockElement()]; }
@@ -315,7 +317,15 @@ test('Integration: Middle-of-text selection deletion and replacement at arbitrar
   assert.equal(state.charStates[4], 'correct'); // 'q'
   assert.equal(state.charStates[5], 'correct'); // 'u'
   assert.equal(state.charStates[7], 'correct'); // 'c'
-  assert.equal(state.charStates[8], 'correct'); // 'k'
+  // 4. Caret-position tracking in handleKeyDown at arbitrary cursor position:
+  // User places caret at index 4 (where expected character is 'q') and types 'z'
+  inputEl.selectionStart = 4;
+  inputEl.selectionEnd = 4;
+  inputEl.dispatchEvent(new KeyboardEventMock('keydown', { key: 'z', code: 'KeyZ' }));
+
+  state = app.getTestState();
+  assert.equal(state.keyMistakes['Q'], 1, 'Physical mistake must be attributed to character at selectionStart (Q), not buffer end');
+  assert.equal(state.keySubstitutions['Q']['Z'], 1);
 });
 
 test('Integration: Robust paste handling without affecting subsequent normal typing', () => {
